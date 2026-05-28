@@ -312,6 +312,37 @@ public enum TerminalApplication: Equatable, Sendable {
         }
     }
 
+    public func appleScriptWindowFocusCommand(matchingTerminalID terminalID: String) -> String? {
+        let escapedTerminalID = terminalID
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        switch self {
+        case .ghostty:
+            return """
+            tell application "Ghostty"
+                activate
+                set query to "\(escapedTerminalID)"
+                repeat with t in terminals
+                    set terminalID to ""
+                    try
+                        set terminalID to (id of t as text)
+                    on error
+                        set terminalID to ""
+                    end try
+                    if terminalID is query then
+                        focus t
+                        return "matched"
+                    end if
+                end repeat
+                return ""
+            end tell
+            """
+        case .iTerm, .terminal, .other:
+            return nil
+        }
+    }
+
     public func appleScriptWindowFocusCommand(matching title: String) -> String? {
         let escapedTitle = title
             .replacingOccurrences(of: "\\", with: "\\\\")

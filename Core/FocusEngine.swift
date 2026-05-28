@@ -29,18 +29,24 @@ public enum FocusError: Error, LocalizedError {
 public struct FocusTarget: Sendable {
     public let terminalName: String
     public let ttyPath: String?
+    public let terminalID: String?
     public let titleSubstring: String?
 
-    public init(terminalName: String, ttyPath: String?, titleSubstring: String?) {
+    public init(terminalName: String, ttyPath: String?, terminalID: String? = nil, titleSubstring: String?) {
         self.terminalName = terminalName
         self.ttyPath = ttyPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.terminalID = terminalID?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.titleSubstring = titleSubstring?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
 @MainActor
 public final class FocusEngine {
-    public init() {}
+    private let agentTitleStateStore: AgentTitleStateStore
+
+    public init(agentTitleStateStore: AgentTitleStateStore = AgentTitleStateStore()) {
+        self.agentTitleStateStore = agentTitleStateStore
+    }
 
     public func frontmostContext(for terminalName: String) -> FrontmostSessionContext? {
         let terminal = TerminalApplication(name: terminalName)
@@ -61,6 +67,11 @@ public final class FocusEngine {
             throw FocusError.missingTerminal
         }
 
+        let agentTitleState = latestAgentTitleState(for: event)
+        let titleQueries = mergedQueries(
+            preferred: [agentTitleState?.topic],
+            fallback: FocusHintResolver.queries(for: event)
+        )
         let workingDirectoryQueries = [event.project, event.title]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -73,10 +84,11 @@ public final class FocusEngine {
         try focus(
             target: FocusTarget(
                 terminalName: terminal,
-                ttyPath: event.tty,
-                titleSubstring: FocusHintResolver.queries(for: event).first
+                ttyPath: event.tty ?? agentTitleState?.tty,
+                terminalID: agentTitleState?.terminalID,
+                titleSubstring: titleQueries.first
             ),
-            titleQueries: FocusHintResolver.queries(for: event),
+            titleQueries: titleQueries,
             workingDirectoryQueries: workingDirectoryQueries
         )
     }
@@ -99,6 +111,10 @@ public final class FocusEngine {
         app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
 
         if let tty = target.ttyPath, !tty.isEmpty, runTTYMatchAppleScript(for: terminal, tty: tty) {
+            return
+        }
+
+        if let terminalID = target.terminalID, !terminalID.isEmpty, runTerminalIDMatchAppleScript(for: terminal, terminalID: terminalID) {
             return
         }
 
@@ -182,6 +198,15 @@ public final class FocusEngine {
 
     private func runTTYMatchAppleScript(for terminal: TerminalApplication, tty: String) -> Bool {
         guard let scriptSource = terminal.appleScriptWindowFocusCommand(matchingTTY: tty),
+              let output = executeAppleScript(scriptSource)?.stringValue else {
+            return false
+        }
+
+        return output == "matched"
+    }
+
+    private func runTerminalIDMatchAppleScript(for terminal: TerminalApplication, terminalID: String) -> Bool {
+        guard let scriptSource = terminal.appleScriptWindowFocusCommand(matchingTerminalID: terminalID),
               let output = executeAppleScript(scriptSource)?.stringValue else {
             return false
         }
@@ -359,6 +384,40 @@ public final class FocusEngine {
         let result = script.executeAndReturnError(&error)
         if error != nil {
             return nil
+        }
+        return result
+    }
+
+    private func latestAgentTitleState(for event: AgentEvent) -> AgentTitleStateEntry? {
+        if let tty = event.tty?.nilIfBlank,
+           let entry = try? agentTitleStateStore.latest(tty: tty) {
+            return entry
+        }
+
+        if let sessionID = sessionIdentifier(from: event.agentID),
+           let entry = try? agentTitleStateStore.latest(sessionID: sessionID) {
+            return entry
+        }
+
+        return nil
+    }
+
+    private func sessionIdentifier(from agentID: String) -> String? {
+        for prefix in ["codex-", "claude-", "opencode-"] where agentID.hasPrefix(prefix) {
+            let suffix = String(agentID.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return suffix.isEmpty ? nil : suffix
+        }
+
+        return nil
+    }
+
+    private func mergedQueries(preferred: [String?], fallback: [String]) -> [String] {
+        var result: [String] = []
+        for value in preferred.compactMap({ $0 }) + fallback {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, !result.contains(trimmed) {
+                result.append(trimmed)
+            }
         }
         return result
     }

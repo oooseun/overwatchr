@@ -26,6 +26,22 @@ final class TerminalApplicationTests: XCTestCase {
         XCTAssertTrue(script?.contains("working directory of focused terminal of selected tab of front window") == true)
     }
 
+    func testGhosttyCanFocusByTerminalID() {
+        let script = TerminalApplication.ghostty.appleScriptWindowFocusCommand(
+            matchingTerminalID: "ABC-123"
+        )
+
+        XCTAssertNotNil(script)
+        XCTAssertTrue(script?.contains("id of t") == true)
+        XCTAssertTrue(script?.contains("focus t") == true)
+    }
+
+    func testITermDoesNotExposeGhosttyTerminalIDScript() {
+        XCTAssertNil(TerminalApplication.iTerm.appleScriptWindowFocusCommand(
+            matchingTerminalID: "ABC-123"
+        ))
+    }
+
     func testITermExposesFrontSessionTTYScript() {
         let script = TerminalApplication.iTerm.appleScriptFrontSessionTTYCommand
 
